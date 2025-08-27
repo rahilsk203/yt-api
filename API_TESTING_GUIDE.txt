@@ -1,0 +1,102 @@
+I understand you want the details of the internal APIs used by the Cloudflare Worker, specifically the third-party API (api.mp3youtube.cc) endpoints it calls internally, along with their curl commands and expected responses. The Worker itself exposes endpoints (/presets, /key, /convert, /download), but internally, it interacts with https://api.mp3youtube.cc for key fetching and video conversion. The issue is that in production, the api.mp3youtube.cc/v2/sanity/key endpoint returns a 403 Forbidden error (Ray ID: 975276ab115247be), while it works locally (wrangler dev). You’ve asked for "IP rolling" and confirmed the problem persists after deployment. Since you’re now specifically asking for the internal APIs used by the Worker, I’ll focus on the two mp3youtube.cc endpoints it calls (/v2/sanity/key and /v2/converter), providing their curl commands, expected responses, and a solution to bypass the 403 error.
+Internal APIs Used by the Worker
+The Worker calls these mp3youtube.cc endpoints:
+
+GET /v2/sanity/key: Fetches the API key required for conversion.
+POST /v2/converter: Converts the YouTube video to MP4/MP3 with specified parameters.
+
+Below, I’ll provide curl commands to directly test these internal APIs, their expected responses, and how to handle the 403 issue in production. I’ll also include a Y2Mate fallback since mp3youtube.cc is unreliable for Workers. The Worker’s own endpoints (/presets, /key, etc.) were covered previously, so I’ll focus only on the internal mp3youtube.cc APIs here.
+1. GET https://api.mp3youtube.cc/v2/sanity/key
+
+Purpose: Fetches the API key needed for the /v2/converter endpoint. This is called by the Worker’s /key endpoint.
+Curl Command (Direct Test):
+bashcurl -X GET https://api.mp3youtube.cc/v2/sanity/key \
+-H "Accept: */*" \
+-H "Accept-Language: en-US,en;q=0.9" \
+-H "Accept-Encoding: gzip, deflate, br, zstd" \
+-H "Cache-Control: no-cache" \
+-H "Content-Type: application/json" \
+-H "Origin: https://iframe.y2meta-uk.com" \
+-H "Pragma: no-cache" \
+-H "Priority: u=1, i" \
+-H "Referer: https://iframe.y2meta-uk.com/" \
+-H "Sec-Ch-Ua: \"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"" \
+-H "Sec-Ch-Ua-Mobile: ?0" \
+-H "Sec-Ch-Ua-Platform: \"Windows\"" \
+-H "Sec-Fetch-Dest: empty" \
+-H "Sec-Fetch-Mode: cors" \
+-H "Sec-Fetch-Site: cross-site" \
+-H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+
+Note: These headers mimic your successful browser request to maximize the chance of bypassing the WAF.
+
+
+Expected Response (Success, Status: 200, JSON):
+json{
+  "key": "abc123xyz"
+}
+
+(The actual key is a string, e.g., abc123xyz, used for /v2/converter.)
+
+
+Error Response (Common in Production, Status: 403):
+json{
+  "error": "403 - Sorry, you have been blocked\nYou are unable to access mp3youtube.cc\n...\nCloudflare Ray ID: 975276ab115247be\n..."
+}
+
+
+
+2. POST https://api.mp3youtube.cc/v2/converter
+
+Purpose: Converts a YouTube video to MP4/MP3 using parameters like your test case (https://youtu.be/47TewLkLZDo, MP4, 1080p, 320kbps, Pretty, H.264). Called by the Worker’s /convert endpoint.
+Curl Command (Direct Test):
+bashcurl -X POST https://api.mp3youtube.cc/v2/converter \
+-H "Accept: */*" \
+-H "Accept-Language: en-US,en;q=0.9" \
+-H "Accept-Encoding: gzip, deflate, br, zstd" \
+-H "Cache-Control: no-cache" \
+-H "Content-Type: application/x-www-form-urlencoded" \
+-H "Origin: https://iframe.y2meta-uk.com" \
+-H "Pragma: no-cache" \
+-H "Priority: u=1, i" \
+-H "Referer: https://iframe.y2meta-uk.com/" \
+-H "Sec-Ch-Ua: \"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"" \
+-H "Sec-Ch-Ua-Mobile: ?0" \
+-H "Sec-Ch-Ua-Platform: \"Windows\"" \
+-H "Sec-Fetch-Dest: empty" \
+-H "Sec-Fetch-Mode: cors" \
+-H "Sec-Fetch-Site: cross-site" \
+-H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36" \
+-H "key: abc123xyz" \
+-d "link=https://youtu.be/47TewLkLZDo&format=mp4&videoQuality=1080&audioBitrate=320&filenameStyle=pretty&vCodec=h264"
+
+Note: Replace abc123xyz with the actual key from /v2/sanity/key or env.API_KEY. The body uses URL-encoded form data matching your parameters.
+
+
+Expected Response (Success, Status: 200, JSON):
+json{
+  "url": "https://cdn.mp3youtube.cc/download/video123.mp4",
+  "filename": "Pretty Video Name (1080p).mp4",
+  "duration": 300,
+  "size": "50MB"
+}
+
+(Actual fields depend on mp3youtube.cc, but typically include a download URL, filename, etc.)
+
+
+Error Response:
+
+No Key or Invalid Key (Status: 401/403):
+json{
+  "error": "Invalid or missing key"
+}
+
+WAF Block (Status: 403):
+json{
+  "error": "403 - Sorry, you have been blocked..."
+}
+
+Invalid Parameters (Status: 400):
+json{
+  "error": "Invalid YouTube link or parameters"
+}
